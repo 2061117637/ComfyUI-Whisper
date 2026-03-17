@@ -43,6 +43,7 @@ Models are auto-downloaded to `/ComfyUI/models/stt/whisper`
 ### Apply Whisper
 
 Transcribe audio and get timestamps for each segment and word.
+Optionally split long segment subtitles by setting `max_words_per_segment` (`0` = disabled). Splits use word timestamps to keep subtitle timing aligned with audio.
 
 ### Add Subtitles To Frames
 

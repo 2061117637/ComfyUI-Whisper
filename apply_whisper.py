@@ -92,6 +92,12 @@ class ApplyWhisperNode:
                     [s.capitalize() for s in sorted(list(whisper.tokenizer.LANGUAGES.values())) ],
                 ),
                 "prompt": ("STRING", {"default":""}),
+                "max_words_per_segment": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "step": 1,
+                    "display": "number"
+                }),
             }
         }
 
@@ -100,7 +106,49 @@ class ApplyWhisperNode:
     FUNCTION = "apply_whisper"
     CATEGORY = "whisper"
 
-    def apply_whisper(self, audio, model, language, prompt):
+    def _build_segment_text_from_words(self, words):
+        # Keep Whisper's token-level spacing behavior when possible.
+        text = "".join(word.get("word", "") for word in words).strip()
+        if text:
+            return text
+
+        # Fallback for unusual cases with empty/whitespace-only tokens.
+        return " ".join(word.get("word", "").strip() for word in words if word.get("word", "").strip())
+
+    def _split_segment_by_word_limit(self, segment, max_words_per_segment):
+        segment_words = [word for word in segment.get("words", []) if word.get("word", "").strip()]
+
+        if max_words_per_segment <= 0 or len(segment_words) <= max_words_per_segment:
+            return [{
+                "value": segment.get("text", "").strip(),
+                "start": segment.get("start", 0.0),
+                "end": segment.get("end", 0.0)
+            }]
+
+        split_segments = []
+        for idx in range(0, len(segment_words), max_words_per_segment):
+            chunk = segment_words[idx: idx + max_words_per_segment]
+            if len(chunk) == 0:
+                continue
+
+            start_time = chunk[0].get("start", segment.get("start", 0.0))
+            end_time = chunk[-1].get("end", segment.get("end", start_time))
+            if end_time < start_time:
+                end_time = start_time
+
+            split_segments.append({
+                "value": self._build_segment_text_from_words(chunk),
+                "start": start_time,
+                "end": end_time
+            })
+
+        return split_segments if len(split_segments) > 0 else [{
+            "value": segment.get("text", "").strip(),
+            "start": segment.get("start", 0.0),
+            "end": segment.get("end", 0.0)
+        }]
+
+    def apply_whisper(self, audio, model, language, prompt, max_words_per_segment=0):
 
         # save audio bytes from VHS to file
         temp_dir = folder_paths.get_temp_directory()
@@ -147,21 +195,18 @@ class ApplyWhisperNode:
         words_alignment = []
 
         for segment in segments:
-            # create segment alignments
-            segment_dict = {
-                'value': segment['text'].strip(),
-                'start': segment['start'],
-                'end': segment['end']
-            }
-            segments_alignment.append(segment_dict)
-
             # create word alignments
-            for word in segment["words"]:
+            segment_words = [word for word in segment.get("words", []) if word.get("word", "").strip()]
+            for word in segment_words:
                 word_dict = {
                     'value': word["word"].strip(),
                     'start': word["start"],
                     'end': word['end']
                 }
                 words_alignment.append(word_dict)
+
+            # create segment alignments (optionally split by max words)
+            split_segments = self._split_segment_by_word_limit(segment, max_words_per_segment)
+            segments_alignment.extend(split_segments)
 
         return (result["text"].strip(), segments_alignment, words_alignment)
