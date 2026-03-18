@@ -78,6 +78,7 @@ class WhisperPatcher(comfy.model_patcher.ModelPatcher):
 
 class ApplyWhisperNode:
     languages_by_name = None
+    preferred_break_endings = frozenset(".!?;:。！？；：…，、,)]}\"'\"”’")
 
     @classmethod
     def INPUT_TYPES(s):
@@ -115,6 +116,31 @@ class ApplyWhisperNode:
         # Fallback for unusual cases with empty/whitespace-only tokens.
         return " ".join(word.get("word", "").strip() for word in words if word.get("word", "").strip())
 
+    def _is_preferred_break_token(self, token_text):
+        if not token_text:
+            return False
+
+        # Space-aware: Whisper often prefixes words with whitespace in some languages.
+        if token_text != token_text.strip():
+            return True
+
+        stripped = token_text.strip()
+        # Prefer splitting after strong punctuation/symbol boundaries.
+        return bool(stripped) and stripped[-1] in self.preferred_break_endings
+
+    def _choose_split_end(self, words, start_idx, max_words_per_segment):
+        forced_end = min(start_idx + max_words_per_segment, len(words))
+        if forced_end >= len(words):
+            return forced_end
+
+        # Search backward inside the allowed window and cut at the nearest
+        # punctuation/symbol boundary before the hard limit.
+        for idx in range(forced_end - 1, start_idx, -1):
+            if self._is_preferred_break_token(words[idx].get("word", "")):
+                return idx + 1
+
+        return forced_end
+
     def _split_segment_by_word_limit(self, segment, max_words_per_segment):
         segment_words = [word for word in segment.get("words", []) if word.get("word", "").strip()]
 
@@ -126,10 +152,10 @@ class ApplyWhisperNode:
             }]
 
         split_segments = []
-        for idx in range(0, len(segment_words), max_words_per_segment):
-            chunk = segment_words[idx: idx + max_words_per_segment]
-            if len(chunk) == 0:
-                continue
+        idx = 0
+        while idx < len(segment_words):
+            end_idx = self._choose_split_end(segment_words, idx, max_words_per_segment)
+            chunk = segment_words[idx:end_idx]
 
             start_time = chunk[0].get("start", segment.get("start", 0.0))
             end_time = chunk[-1].get("end", segment.get("end", start_time))
@@ -141,6 +167,7 @@ class ApplyWhisperNode:
                 "start": start_time,
                 "end": end_time
             })
+            idx = end_idx
 
         return split_segments if len(split_segments) > 0 else [{
             "value": segment.get("text", "").strip(),
